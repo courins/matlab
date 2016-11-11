@@ -3,7 +3,7 @@
 % Written by Julian Moosmann.
 % First version: 2016-09-28. Last modifcation: 2016-11-08
 
-clear all
+%clear all
 
 %% PARAMETERS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %scan_dir = pwd;
@@ -23,7 +23,7 @@ bin = 4; % bin size: if 2 do 2 x 2 binning, if 1 do nothing
 poolsize = 28; % number of workers in parallel pool to be used
 gpu_ind = 1; % GPU Device to use: gpuDevice(gpu_ind)
 gpu_thresh = 0.8; % Percentage of maximally used to available GPU memory
-full_angular_range = [pi]; % in radians: empty ([]), full angle of rotation, or array of angles. if empty full rotation angles is determined automatically
+full_angular_range = pi; % in radians: empty ([]), full angle of rotation, or array of angles. if empty full rotation angles is determined automatically
 num_proj_hard = 550; % hard coded number of projection.
 correct_beam_shake = 0;%  correlate flat fields and projection to correct beam shaking
 correct_beam_shake_max_shift = 0; % if 0: use the best match (i.e. the one which is closest to zero), if > 0 all flats which are shifted less than correct_beam_shake_max_shift are used
@@ -59,7 +59,6 @@ verbose = 1; % print information to standard output
 % TODO: automatic determination of rot center (entropy type)
 % TODO: make pixel filtering thresholds parameters
 % TODO: vertical ROI reco
-% TODO: convert read filenames into matrix/struct a function
 % TODO: padding options for FBP filter
 % TODO: normalize proj with beam current
 % TODO: write log file
@@ -126,29 +125,26 @@ PrintVerbose(verbose, '\n reco   : %s', reco_dir)
 %% File names
 
 % Raw projection file names
-data_struct = dir( [scan_dir, '*.img'] );
-if isempty( data_struct )
-    data_struct = dir( [scan_dir, 'proj_*.tif'] );
+img_names = FilenameCell( [scan_dir, '*.img'] );
+if isempty( img_names )
+    img_names = FilenameCell( [scan_dir, 'proj_*.tif'] );
 end
-img_names = {data_struct.name};
 img_nums = CellString2Vec( img_names );
 num_img = numel(img_names);
 
 % Ref file names
-data_struct = dir( [scan_dir, '*.ref'] );
-if isempty( data_struct )
-    data_struct = dir( [scan_dir, 'ref_*.tif'] );
+ref_names= FilenameCell( [scan_dir, '*.ref'] );
+if isempty( ref_names )
+    ref_names = FilenameCell( [scan_dir, 'ref_*.tif'] );
 end
-ref_names = {data_struct.name};
 ref_nums = CellString2Vec( ref_names );
 num_ref = numel(ref_names);
 
 % Dark file names
-data_struct = dir( [scan_dir, '*.dar'] );
-if isempty( data_struct )
-    data_struct = dir( [scan_dir, 'dark_*.tif'] );
+dark_names = FilenameCell( [scan_dir, '*.dar'] );
+if isempty( dark_names )
+    dark_names = FilenameCell( [scan_dir, 'dark_*.tif'] );
 end
-dark_names = {data_struct.name};
 dark_nums = CellString2Vec( dark_names );
 num_dark = numel(dark_names);
 
@@ -182,32 +178,31 @@ PrintVerbose( poolsize > 1, ' Elapsed time: %g s', toc-t)
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Read flat corrected projection
 if read_proj    
-data_struct = dir( [flatcor_dir, 'proj*.*'] );
-if isempty( data_struct )
+proj_names = FilenameCell( [flatcor_dir, 'proj*.*'] );
+if isempty( proj_names )
     
     fprintf('\n No flat corrected projections found! Switch to standard pre-processing.')
     read_proj = 0;
-else
-    proj_names = {data_struct.name};
-    num_proj_read = numel(proj_names);
-    if num_proj > num_proj_read
-        fprintf('\n Less projections available (%g) than demanded (%g)! Switch to standard pre-processing.', num_proj_read, num_proj )
+else    
+    num_proj_found = numel(proj_names);
+    if num_proj > num_proj_found
+        fprintf('\n Less projections available (%g) than demanded (%g)! Switch to standard pre-processing.', num_proj_found, num_proj )
         read_proj = 0;    
     end
 end    
     % File names
     t = toc;
     PrintVerbose(verbose, '\n Read flat corrected projections.')    
-    if num_proj_read ~= num_proj
-        fprintf('\n CAUTION: Number of flat corrected projections read (%g) differs from number of projections to be processed (%g)!\n', num_proj_read, num_proj)
+    if num_proj_found ~= num_proj
+        fprintf('\n CAUTION: Number of flat corrected projections read (%g) differs from number of projections to be processed (%g)!\n', num_proj_found, num_proj)
     end
 
     % Preallocation
-    proj = zeros( binned_size(1), binned_size(2), num_proj_read, 'single');
+    proj = zeros( binned_size(1), binned_size(2), num_proj_found, 'single');
     proj_names_mat = NameCellToMat( proj_names );
 
     % Read projections    
-    parfor nn = 1:num_proj_read
+    parfor nn = 1:num_proj_found
         filename = sprintf('%s%s', flatcor_dir, proj_names_mat(nn, :));
         %proj(:, :, nn) = imread( filename, 'tif' )';
         proj(:, :, nn) = read_image( filename )';
@@ -335,13 +330,11 @@ elseif ~read_proj
     end 
 end
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-%%  %% Rotation axis position and Tomgraphic parameters %%%%%%%%%%%%%%%%%%%
 if do_tomo    
     t = toc;
-   
     PrintVerbose(verbose, '\n Rotation axis:')
-    % Automatic determination of full rotation angle if full_angular_range is empty
+   
+    %% Automatic determination of full rotation angle if full_angular_range is empty
     if isempty( full_angular_range )    
         im1 = proj( rot_axis_roi1, rot_axis_roi2, 1);
         im2 = proj( rot_axis_roi1, rot_axis_roi2, num_proj);

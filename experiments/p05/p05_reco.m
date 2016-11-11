@@ -3,12 +3,12 @@
 % Written by Julian Moosmann.
 % First version: 2016-09-28. Last modifcation: 2016-11-11
 
-%clear all
+clear all
 
 %% PARAMETERS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %scan_dir = pwd;
 scan_dir = ...      
-    '/asap3/petra3/gpfs/p05/2016/data/11001994/raw/szeb_28_00';
+    '/asap3/petra3/gpfs/p05/2016/data/11001994/raw/szeb_29_01';
     '/asap3/petra3/gpfs/p05/2016/commissioning/c20160803_001_pc_test/raw/phase_1000';
     '/asap3/petra3/gpfs/p05/2016/commissioning/c20160803_001_pc_test/raw/phase_1400';
     '/asap3/petra3/gpfs/p05/2016/commissioning/c20160913_000_synload/raw/mg5gd_21_3w';
@@ -19,7 +19,7 @@ scan_dir = ...
 read_proj = 0; % Read flatfield-corrected images from disc
 read_proj_folder = []; % subfolder of 'flat_corrected' containing projections
 proj_stride = 1; % Stride of projection images to read
-ref_ind = [1:50]; % indices of found flats that shall be used. if empty: all, if scalar: stride
+ref_ind = [1:25]; % indices of found flats that shall be used. if empty: all, if scalar: stride
 bin = 4; % bin size: if 2 do 2 x 2 binning, if 1 do nothing
 poolsize = 28; % number of workers in parallel pool to be used
 gpu_ind = 1; % GPU Device to use: gpuDevice(gpu_ind)
@@ -51,10 +51,10 @@ rot_axis_roi2 = [0.25 0.75]; % for correlation
 filter_type = 'Ram-Lak';
 pixel_size_tomo = 1; % size of a detector pixel: if different from one 'vol_size' needs to be ajusted 
 link_data = 1; % ASTRA data objects become references to Matlab arrays.
-take_neg_log = []; % if empty logarithm is taken for attenuation but not for phase
-parfolder = 'test'; % parent folder to 'reco' and 'flat_corrected'
+take_neg_log = [1]; % if empty logarithm is taken for attenuation but not for phase
+parfolder = ''; % parent folder to 'reco' and 'flat_corrected'
 parfolder_flatcor = ''; % parent folder to 'flat_corrected'
-parfolder_reco = ''; % parent folder to 'reco'
+parfolder_reco = 'takeLog'; % parent folder to 'reco'
 verbose = 1; % print information to standard output
 
 %% TODO %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -122,7 +122,6 @@ if isempty( parfolder_reco )
 else
     reco_dir = [out_dir, filesep, 'reco', filesep, parfolder_reco, filesep];
 end
-PrintVerbose(verbose, '\n reco   : %s', reco_dir)
 
 %% File names
 
@@ -223,7 +222,7 @@ elseif ~read_proj
         fprintf('\n CAUTION: dark field contains zeros')
     end
     PrintVerbose(verbose, ' Elapsed time: %g s', toc-t)
-    PrintVerbose(verbose, '\n dark field: %g found and used', num_dark)
+    PrintVerbose(verbose, '\n dark fields: %g found and used', num_dark)
 
     %% Flat field
     t = toc;
@@ -342,7 +341,9 @@ end
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 if do_tomo    
     t = toc;
-    PrintVerbose(verbose, '\nRotation axis:')
+    PrintVerbose(verbose, '\nRotation axis:')    
+    num_pix1 = size( proj, 1);
+    num_pix2 = size( proj, 2);    
    
     %% Automatic determination of full rotation angle if full_angular_range is empty
     if isempty( full_angular_range )    
@@ -383,10 +384,45 @@ if do_tomo
     PrintVerbose(verbose, '\n calulated rotation axis offset: %g, %g', out.Xshift / 2)
     PrintVerbose(verbose, '\n rotation axis offset used: %g', rotation_axis_offset );
     PrintVerbose(verbose, '\n rotation axis position: %g', num_pix1 / 2 + rotation_axis_offset );
+   
+end
 
+%% Phase retrieval %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+if do_phase_retrieval
+        t = toc;
+        if isempty( take_neg_log )
+            take_neg_log = 0;
+        end
+        
+        % Phase retieval filter
+        edp = [energy, sample_detector_distance, pixel_size_binned];
+        [pf, pha_appendix] = PhaseFilter( phase_retrieval_method, binned_size, edp, reg_par, bin_filt, 'single');
+          
+        % reco phase dir
+        if isempty( parfolder_reco )
+            reco_phase_dir = [out_dir, filesep, 'reco_phase_', pha_appendix, filesep];
+        else
+            reco_phase_dir = [out_dir, filesep, 'reco_phase_', pha_appendix, filesep, parfolder_reco, filesep];
+        end
+        CheckAndMakePath( reco_phase_dir )
+        PrintVerbose(verbose, '\nPhase retrieval.')        
+
+        % Projections
+        parfor nn = 1:num_proj_used
+            pha = -real( ifft2( pf .* fft2( proj(:,:,nn) )) );            
+            proj(:,:,nn) = pha;
+        end
+        PrintVerbose(verbose, ' Elapsed time: %g s = %g min', toc-t, (toc-t)/60)
+        PrintVerbose(verbose, '\n method: %s', phase_retrieval_method)
+        PrintVerbose(verbose, '\n energy: %g keV', energy)
+        PrintVerbose(verbose, '\n distance: %g m', sample_detector_distance)
+        PrintVerbose(verbose, '\n binned pixel size: %g m', pixel_size_binned)        
+end
+
+%% Tomographic reco
+if do_tomo
+    PrintVerbose(verbose, '\nTomographic reconstruction')
     %% GPU slab sizes
-    num_pix1 = size( proj, 1);
-    num_pix2 = size( proj, 2);
     if isempty( vol_shape )
         % default volume given by the detector width and height
         vol_shape = [num_pix1, num_pix1, num_pix2];
@@ -424,46 +460,10 @@ if do_tomo
     PrintVerbose(verbose, '\n maximum memory of subvolume: %g MiB', prod( subvol_shape ) * 4 / 1024^2 )
     PrintVerbose(verbose, '\n number of subvolume slabs: %g', num_slabs )
     PrintVerbose(verbose, '\n maximum number of slices per slab: %g', num_sli )    
+    
     % Loop over slabs
     filt_direction = 1; % direction along the detector lines orthogonal to the rotation axis
-end
-
-%% Phase retrieval %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-if do_phase_retrieval
-        t = toc;
-        if isempty( take_neg_log )
-            take_neg_log = 0;
-        end
-        
-        % Phase retieval filter
-        edp = [energy, sample_detector_distance, pixel_size_binned];
-        [pf, pha_appendix] = PhaseFilter( phase_retrieval_method, binned_size, edp, reg_par, bin_filt, 'single');
-          
-        % reco phase dir
-        if isempty( parfolder_reco )
-            reco_phase_dir = [out_dir, filesep, 'reco_phase_', pha_appendix, filesep];
-        else
-            reco_phase_dir = [out_dir, filesep, 'reco_phase_', pha_appendix, filesep, parfolder_reco, filesep];
-        end
-        CheckAndMakePath( reco_phase_dir )
-        PrintVerbose(verbose, '\nPhase retrieval.')        
-
-        % Projections
-        parfor nn = 1:num_proj_used
-            pha = -real( ifft2( pf .* fft2( proj(:,:,nn) )) );            
-            proj(:,:,nn) = pha;
-        end
-        PrintVerbose(verbose, ' Elapsed time: %g s = %g min', toc-t, (toc-t)/60)
-        PrintVerbose(verbose, '\n method: %s', phase_retrieval_method)
-        PrintVerbose(verbose, '\n energy: %g keV', energy)
-        PrintVerbose(verbose, '\n distance: %g m', sample_detector_distance)
-        PrintVerbose(verbose, '\n binned pixel size: %g m', pixel_size_binned)
-        PrintVerbose(verbose, '\n reco phase dir: %s', reco_phase_dir)
-end
-
-%% Tomographic reco
-if do_tomo
-    PrintVerbose(verbose, '\n Tomographic reconstruction of %g slabs', num_slabs)
+    PrintVerbose(verbose, '\nReconstruct %g slabs:', num_slabs)
     for nn = 1:num_slabs
 
         % Slice indices
@@ -471,12 +471,12 @@ if do_tomo
         sli1 = min( [nn * num_sli, vol_shape(3)] );
 
         % Filter sinogram
-        PrintVerbose(verbose, ' \n  slab %g: Filter sino: ', nn)
+        PrintVerbose(verbose, ' \n slab %g: Filter sino: ', nn)
         filt = iradonDesignFilter('Ram-Lak', size(proj,1), 1);
         if isempty( take_neg_log )
             take_neg_log = 1;
         end
-        sino = real( ifft( bsxfun(@times, fft( NegLog(permute(proj(:,sli0:sli1,:), [1 3 2]), take_neg_log), [], 1), filt), [], 1, 'symmetric') );        
+        sino = real( ifft( bsxfun(@times, fft( NegLog(-permute(proj(:,sli0:sli1,:), [1 3 2]), take_neg_log), [], 1), filt), [], 1, 'symmetric') );        
         PrintVerbose(verbose, 'done.')
 
         % Backprojection
@@ -504,7 +504,10 @@ if do_tomo
             PrintVerbose(verbose, ' done.')
         end
     end
-    PrintVerbose(verbose, '\n  Elapsed time: %g s = %g min', toc-t, (toc-t)/60 )
+    PrintVerbose(verbose, '\n Elapsed time: %g s = %g min', toc-t, (toc-t)/60 )
+    PrintVerbose(verbose, '\n reco dir: %s', save_dir)
+    %PrintVerbose(verbose, '\n reco dir: %s', reco_dir)
+    %PrintVerbose(verbose, '\n reco phase dir: %s', reco_phase_dir)
 
 end
 
